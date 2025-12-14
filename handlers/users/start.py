@@ -808,7 +808,7 @@ async def show_help(message: types.Message):
         f"2. PDF yoki Audio ni tanlang\n"
         f"3. Kitobni bosing — avtomatik yuklanadi!\n\n"
         f"<b>Savol va takliflar uchun:</b>\n"
-        f"@admin_username"
+        f"@hasanjozilov"
     )
 
     await message.answer(text, reply_markup=close_keyboard())
