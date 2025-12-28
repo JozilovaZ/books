@@ -1074,7 +1074,10 @@ async def edit_book_author_done(message: types.Message, state: FSMContext):
     await state.finish()
 
 
-# =================== O'CHIRISH VA TASDIQLASH ===================
+
+
+
+#
 #
 # @dp.message_handler(Text(equals=f"{AdminEmoji.DELETE} O'chirish"))
 # async def delete_book_start(message: types.Message):
@@ -1145,33 +1148,141 @@ async def edit_book_author_done(message: types.Message, state: FSMContext):
 #         reply_markup=adm_confirm_kb("del_cat", cat_id)
 #     )
 #     await callback.answer()
-#
-#
-# @dp.callback_query_handler(lambda c: c.data.startswith("adm_restore_book:"))
-# async def restore_book(callback: types.CallbackQuery):
-#     """Qayta tiklash"""
-#     book_id = AdminCallbackParser.get_int_param(callback.data, 0)
-#     try:
-#         book_db.restore_book(book_id)
-#         await callback.message.edit_text("✅ Kitob qayta tiklandi!")
-#         logger.info(f"Book restored: {book_id}")
-#     except Exception as e:
-#         await callback.message.edit_text(f"❌ Xatolik: {e}")
-#     await callback.answer()
-#
-#
-# @dp.callback_query_handler(lambda c: c.data.startswith("adm_restore_cat:"))
-# async def restore_category(callback: types.CallbackQuery):
-#     """Kategoriyani qayta tiklash"""
-#     cat_id = AdminCallbackParser.get_int_param(callback.data, 0)
-#     try:
-#         book_db.restore_category(cat_id)
-#         await callback.message.edit_text("✅ Kategoriya qayta tiklandi!")
-#         logger.info(f"Category restored: {cat_id}")
-#     except Exception as e:
-#         await callback.message.edit_text(f"❌ Xatolik: {e}")
-#     await callback.answer()
-#
+
+# =================== O'CHIRISH BO'LIMI (TO'G'IRLANGAN) ===================
+
+@dp.message_handler(Text(equals=f"{AdminEmoji.DELETE} O'chirish"))
+async def delete_book_start(message: types.Message):
+    """O'chirish uchun asosiy kategoriyalarni ko'rsatish"""
+    if not await is_admin(message.from_user.id):
+        return
+
+    # Faqat o'chirilmagan asosiy kategoriyalarni olamiz
+    categories = book_db.get_main_categories()
+
+    if not categories:
+        await message.answer("📂 Aktiv kategoriyalar topilmadi.", reply_markup=admin_book_menu())
+        return
+
+    # prefix="adm_del_cat_sel" - bu orqali subkategoriyalarni ochishni boshqarish mumkin
+    keyboard = adm_categories_kb(categories, prefix="adm_del_cat_sel", show_book_count=True,
+                                 back_callback="adm_back:book_menu")
+    await message.answer("🗑 <b>Kategoriyani tanlang:</b>", reply_markup=keyboard)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("adm_del_cat_sel:"))
+async def delete_book_subcategory_list(callback: types.CallbackQuery):
+    """Subkategoriya bormi yoki yo'qligini tekshirish va kitoblarni ko'rsatish"""
+    cat_id = AdminCallbackParser.get_int_param(callback.data, 0)
+    category = book_db.get_category_by_id(cat_id)
+
+    if not category:
+        await callback.answer("❌ Kategoriya topilmadi!", show_alert=True)
+        return
+
+    subcats = book_db.get_subcategories(cat_id)
+
+    if subcats:
+        # Subkategoriyalar bo'lsa, ularni chiqaramiz
+        keyboard = adm_subcategories_kb(subcats, parent_id=cat_id, prefix="adm_del_cat_sel", allow_direct=True)
+        await callback.message.edit_text(f"📁 <b>{category.name}</b>\n\nSubkategoriyani tanlang:", reply_markup=keyboard)
+    else:
+        # Subkategoriya bo'lmasa, to'g'ridan-to'g'ri kitoblar ro'yxatiga o'tamiz
+        result = book_db.get_books(category_id=cat_id, page=1, per_page=BOOKS_PER_PAGE)
+
+        if not result.items:
+            # Agar kitob bo'lmasa, kategoriyaning o'zini o'chirish tugmasini chiqaramiz
+            keyboard = types.InlineKeyboardMarkup().add(
+                types.InlineKeyboardButton("🗑 Kategoriyani o'chirish", callback_data=f"adm_del_cat_conf:{cat_id}")
+            ).add(types.InlineKeyboardButton(f"{AdminEmoji.BACK} Orqaga", callback_data="adm_back:book_menu"))
+
+            await callback.message.edit_text(f"📂 <b>{category.name}</b> ichida kitoblar yo'q.", reply_markup=keyboard)
+        else:
+            keyboard = adm_books_paginated_kb(result, prefix="adm_del_book",
+                                              back_callback=f"adm_del_cat_sel:{cat_id}",
+                                              category_id=cat_id)
+            await callback.message.edit_text(f"🗑 <b>{category.name}</b>: Kitobni tanlang:", reply_markup=keyboard)
+
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("adm_del_book:"))
+async def delete_book_confirm(callback: types.CallbackQuery):
+    """Kitobni o'chirishni tasdiqlash (Savatga tashlash)"""
+    book_id = AdminCallbackParser.get_int_param(callback.data, 0)
+    book = book_db.get_book_by_id(book_id)
+
+    if not book:
+        await callback.answer("❌ Kitob topilmadi!", show_alert=True)
+        return
+
+    emoji = AdminEmoji.BOOK_PDF if book.file_type == FileType.PDF else AdminEmoji.BOOK_AUDIO
+    # Tasdiqlash tugmalari: adm_yes:del_book:ID
+    await callback.message.edit_text(
+        f"⚠️ <b>Rostdan o'chirasizmi?</b>\n\n{emoji} {book.title}\n✍️ {book.author or '—'}\n\n"
+        f"<i>Kitob o'chirilgach, 'O'chirilganlar' bo'limiga tushadi.</i>",
+        reply_markup=adm_confirm_kb("del_book", book_id)
+    )
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("adm_del_cat_conf:"))
+async def delete_category_confirm(callback: types.CallbackQuery):
+    """Kategoriyani o'chirishni tasdiqlash"""
+    cat_id = AdminCallbackParser.get_int_param(callback.data, 0)
+    category = book_db.get_category_by_id(cat_id)
+
+    if not category:
+        await callback.answer("❌ Kategoriya topilmadi!", show_alert=True)
+        return
+
+    book_count = book_db.count_books_by_category(cat_id)
+    # Tasdiqlash tugmalari: adm_yes:del_cat:ID
+    await callback.message.edit_text(
+        f"⚠️ <b>Kategoriyani o'chirmoqchimisiz?</b>\n\n📁 {category.name}\n📖 Ichida {book_count} ta kitob bor.\n\n"
+        f"<i>Kategoriya o'chirilsa, uning ichidagi barcha kitoblar ham o'chadi!</i>",
+        reply_markup=adm_confirm_kb("del_cat", cat_id)
+    )
+    await callback.answer()
+
+
+# =================== IJRO ETISH (ACTION) HANDLERLARI ===================
+
+
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("adm_no:"))
+async def confirm_action_no(callback: types.CallbackQuery):
+    """'❌ Yo'q' tugmasi bosilganda bekor qilish"""
+    await callback.message.edit_text("❌ Bekor qilindi.")
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("adm_restore_book:"))
+async def restore_book(callback: types.CallbackQuery):
+    """Qayta tiklash"""
+    book_id = AdminCallbackParser.get_int_param(callback.data, 0)
+    try:
+        book_db.restore_book(book_id)
+        await callback.message.edit_text("✅ Kitob qayta tiklandi!")
+        logger.info(f"Book restored: {book_id}")
+    except Exception as e:
+        await callback.message.edit_text(f"❌ Xatolik: {e}")
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("adm_restore_cat:"))
+async def restore_category(callback: types.CallbackQuery):
+    """Kategoriyani qayta tiklash"""
+    cat_id = AdminCallbackParser.get_int_param(callback.data, 0)
+    try:
+        book_db.restore_category(cat_id)
+        await callback.message.edit_text("✅ Kategoriya qayta tiklandi!")
+        logger.info(f"Category restored: {cat_id}")
+    except Exception as e:
+        await callback.message.edit_text(f"❌ Xatolik: {e}")
+    await callback.answer()
+
 #
 # @dp.callback_query_handler(lambda c: c.data.startswith("adm_yes:"))
 # async def confirm_yes(callback: types.CallbackQuery):
@@ -1219,159 +1330,59 @@ async def edit_book_author_done(message: types.Message, state: FSMContext):
 #         logger.error(f"Confirm action error: {e}")
 #
 #     await callback.answer()
-#
-#
-# @dp.callback_query_handler(lambda c: c.data.startswith("adm_no:"))
-# async def confirm_no(callback: types.CallbackQuery):
-#     """Yo'q - bekor"""
-#     await callback.message.edit_text("❌ Bekor qilindi")
-#     await callback.answer()
-
-
-
-@dp.message_handler(Text(equals=f"{AdminEmoji.DELETE} O'chirish"))
-async def delete_book_start(message: types.Message):
-    """Kitob o'chirish"""
-    if not await is_admin(message.from_user.id):
-        return
-
-    categories = book_db.get_categories_with_book_count()
-    main_cats = [c for c in categories if c.parent_id is None]
-
-    if not main_cats:
-        await message.answer("📂 Kategoriyalar yo'q.", reply_markup=admin_book_menu())
-        return
-
-    keyboard = adm_categories_kb(main_cats, prefix="adm_delb_cat", show_book_count=True,
-                                 back_callback="adm_back:book_menu")
-    await message.answer("🗑 <b>Kategoriyani tanlang:</b>", reply_markup=keyboard)
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith("adm_delb_cat:"))
-async def delete_book_category(callback: types.CallbackQuery):
-    """O'chirish uchun kategoriya"""
-    cat_id = AdminCallbackParser.get_int_param(callback.data, 0)
-    result = book_db.get_books(category_id=cat_id, page=1, per_page=BOOKS_PER_PAGE)
-
-    if not result.items:
-        await callback.message.edit_text("📂 Bu kategoriyada kitoblar yo'q.")
-        await callback.answer()
-        return
-
-    keyboard = adm_books_paginated_kb(result, prefix="adm_del_book", back_callback="adm_back:book_menu",
-                                      category_id=cat_id)
-    await callback.message.edit_text("🗑 <b>O'chirish uchun kitobni tanlang:</b>", reply_markup=keyboard)
-    await callback.answer()
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith("adm_del_book:"))
-async def delete_book_confirm(callback: types.CallbackQuery):
-    """Tasdiqlash"""
-    book_id = AdminCallbackParser.get_int_param(callback.data, 0)
-    book = book_db.get_book_by_id(book_id)
-
-    if not book:
-        await callback.answer("❌ Topilmadi!", show_alert=True)
-        return
-
-    emoji = AdminEmoji.BOOK_PDF if book.file_type == FileType.PDF else AdminEmoji.BOOK_AUDIO
-    await callback.message.edit_text(
-        f"⚠️ <b>Rostdan o'chirasizmi?</b>\n\n{emoji} {book.title}\n✍️ {book.author or '—'}\n📥 {book.download_count} marta yuklangan",
-        reply_markup=adm_confirm_kb("del_book", book_id)
-    )
-    await callback.answer()
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith("adm_del_cat:"))
-async def delete_category_confirm(callback: types.CallbackQuery):
-    """Kategoriya o'chirishni tasdiqlash"""
-    cat_id = AdminCallbackParser.get_int_param(callback.data, 0)
-    category = book_db.get_category_by_id(cat_id)
-
-    if not category:
-        await callback.answer("❌ Topilmadi!", show_alert=True)
-        return
-
-    book_count = book_db.count_books_by_category(cat_id)
-    await callback.message.edit_text(
-        f"⚠️ <b>Rostdan o'chirasizmi?</b>\n\n📁 {category.name}\n📖 {book_count} ta kitob ham o'chiriladi!",
-        reply_markup=adm_confirm_kb("del_cat", cat_id)
-    )
-    await callback.answer()
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith("adm_restore_book:"))
-async def restore_book(callback: types.CallbackQuery):
-    """Qayta tiklash"""
-    book_id = AdminCallbackParser.get_int_param(callback.data, 0)
-    try:
-        book_db.restore_book(book_id)
-        await callback.message.edit_text("✅ Kitob qayta tiklandi!")
-        logger.info(f"Book restored: {book_id}")
-    except Exception as e:
-        await callback.message.edit_text(f"❌ Xatolik: {e}")
-    await callback.answer()
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith("adm_restore_cat:"))
-async def restore_category(callback: types.CallbackQuery):
-    """Kategoriyani qayta tiklash"""
-    cat_id = AdminCallbackParser.get_int_param(callback.data, 0)
-    try:
-        book_db.restore_category(cat_id)
-        await callback.message.edit_text("✅ Kategoriya qayta tiklandi!")
-        logger.info(f"Category restored: {cat_id}")
-    except Exception as e:
-        await callback.message.edit_text(f"❌ Xatolik: {e}")
-    await callback.answer()
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("adm_yes:"))
-async def confirm_yes(callback: types.CallbackQuery):
-    """Ha - tasdiqlash"""
-    parts = callback.data.replace("adm_yes:", "").split(":")
-    action = parts[0]
-    item_id = int(parts[1]) if len(parts) > 1 else None
+async def confirm_action_yes(callback: types.CallbackQuery):
+    """Barcha 'Ha' tugmalari uchun yagona ijrochi handler"""
+    parts = callback.data.split(":")
+
+    # 1. Actionni aniqlaymiz (del_book, del_cat, purge_all)
+    action = parts[1]
 
     try:
-        if action == "del_cat" and item_id:
-            category = book_db.get_category_by_id(item_id)
-            book_db.delete_category(item_id, hard_delete=False)
-            await callback.message.edit_text(f"✅ <b>{category.name}</b> o'chirildi!\n<i>Qayta tiklash mumkin</i>")
-            logger.info(f"Category soft deleted: {category.name}")
-
-        elif action == "del_book" and item_id:
-            book = book_db.get_book_by_id(item_id)
-            book_db.delete_book(item_id, hard_delete=False)
-            await callback.message.edit_text(f"✅ <b>{book.title}</b> o'chirildi!\n<i>Qayta tiklash mumkin</i>")
-            logger.info(f"Book soft deleted: {book.title}")
-
-        elif action == "hard_del_book" and item_id:
-            book = book_db.get_book_by_id(item_id)
-            book_db.delete_book(item_id, hard_delete=True)
-            await callback.message.edit_text(f"🗑 <b>{book.title}</b> butunlay o'chirildi!")
-            logger.info(f"Book hard deleted: {book.title}")
-
-        elif action == "hard_del_cat" and item_id:
-            category = book_db.get_category_by_id(item_id)
-            book_db.delete_category(item_id, hard_delete=True)
-            await callback.message.edit_text(f"🗑 <b>{category.name}</b> butunlay o'chirildi!")
-            logger.info(f"Category hard deleted: {category.name}")
-
-        elif action == "purge_all":
+        # --- ID TALAB QILMAYDIGAN AMALLAR ---
+        if action == "purge_all":
             result = book_db.purge_deleted(days_old=0)
             await callback.message.edit_text(
-                f"🗑 <b>Tozalash tugadi!</b>\n\n📖 Kitoblar: {result['books']}\n📁 Kategoriyalar: {result['categories']}")
-            logger.info(f"Purge completed: {result}")
+                f"🗑 <b>Barcha o'chirilgan elementlar tozalandi!</b>\n\n"
+                f"📖 Kitoblar: {result.get('books', 0)}\n"
+                f"📁 Kategoriyalar: {result.get('categories', 0)}"
+            )
+            await callback.answer()
+            return  # Jarayonni tugatish
 
-        else:
-            await callback.message.edit_text("❌ Noma'lum amal")
+        # --- ID TALAB QILADIGAN AMALLAR ---
+        # Avval ro'yxatda 3-element (ID) borligini tekshiramiz
+        if len(parts) < 3:
+            await callback.answer("❌ Xatolik: ID topilmadi!", show_alert=True)
+            return
+
+        item_id = int(parts[2])
+
+        if action == "del_book":
+            book = book_db.get_book_by_id(item_id)
+            if book:
+                # Birdaniga o'chirish uchun hard_delete=True
+                book_db.delete_book(item_id, hard_delete=True)
+                await callback.message.edit_text(f"🗑 <b>{book.title}</b> butunlay o'chirib yuborildi!")
+            else:
+                await callback.answer("❌ Kitob topilmadi!")
+
+        elif action == "del_cat":
+            category = book_db.get_category_by_id(item_id)
+            if category:
+                # Birdaniga o'chirish uchun hard_delete=True
+                book_db.delete_category(item_id, hard_delete=True)
+                await callback.message.edit_text(f"🗑 <b>{category.name}</b> va uning ichidagi hamma narsa o'chirildi!")
+            else:
+                await callback.answer("❌ Kategoriya topilmadi!")
 
     except Exception as e:
+        logger.error(f"Execution error: {e}")
         await callback.message.edit_text(f"❌ Xatolik: {e}")
-        logger.error(f"Confirm action error: {e}")
 
     await callback.answer()
+
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("adm_no:"))
@@ -1528,6 +1539,8 @@ async def admin_back_handler(callback: types.CallbackQuery, state: FSMContext):
                 await callback.message.edit_text(f"📁 <b>{category.name}</b>\n\nTurni tanlang:", reply_markup=keyboard)
 
     await callback.answer()
+
+
 
 
 # =================== CANCEL HANDLER ===================
